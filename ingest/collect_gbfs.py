@@ -9,6 +9,9 @@ Design notes:
   - Our own UTC fetch timestamp goes in the S3 key and in object metadata.
     We do NOT trust the feed's `last_updated` for partitioning, because it can
     be stale/cached, and GitHub Actions cron fires at irregular intervals.
+  - The GBFS spec version is part of the S3 key. Feed schemas change between
+    spec versions, so a version bump must land in a separate partition rather
+    than mixing two shapes of JSON in one prefix.
   - Files are gzipped. Snowflake reads .gz from an external stage natively.
   - Any failure exits non-zero so the Actions run shows red instead of
     silently collecting nothing for a week.
@@ -27,37 +30,39 @@ from botocore.exceptions import BotoCoreError, ClientError
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+# Pinned deliberately to 1.1. Lyft also publishes 2.3, which adds a
+# vehicle_types_available array — but 1.1 already exposes num_ebikes_available,
+# so the classic/electric split is derivable and the upgrade buys nothing for
+# this analysis (though I do plan to switch to 2.3 after completing this project for 1.1). 
+# Resolving the version dynamically from the discovery document
+# would be worse: a silent spec bump mid-collection would change our schema
+# without warning. Pinning makes a version change a decision, not a surprise.
+GBFS_VERSION = "1.1"
+_BASE = f"https://gbfs.lyft.com/gbfs/{GBFS_VERSION}/bkn/en"
+
 FEEDS = {
-    "station_status": "https://gbfs.lyft.com/gbfs/1.1/bkn/en/station_status.json",
-    "station_information": "https://gbfs.lyft.com/gbfs/1.1/bkn/en/station_information.json",
+    "station_status": f"{_BASE}/station_status.json",
+    "station_information": f"{_BASE}/station_information.json",
 }
 
 REQUEST_TIMEOUT = 30
-USER_AGENT = "citibike-rebalancing-project/0.1 (portfolio project; contact via github)"
+USER_AGENT = "citibike-rebalancing-project/0.1 (portfolio project; contact via github)"          # ethical when sending requests
 
-
+# Reusable HTTP connection session
 def build_session() -> requests.Session:
-    """HTTP session that retries on transient errors instead of dying."""
     session = requests.Session()
     retry = Retry(
         total=4,
-        backoff_factor=1.5,          # 0s, 1.5s, 3s, 6s
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"],
+        backoff_factor=1.5,          # 0s, 1.5s, 3s, 6s, something I actually learned in my networks class :D
+        status_forcelist=[429, 500, 502, 503, 504],          # 429 is "Too Many Requests", 500-504 are server errors
+        allowed_methods=["GET"],           # only retry GET (since its idempotent (meaning it could be repeated without changing state beyond the first time))
     )
     session.mount("https://", HTTPAdapter(max_retries=retry))
     session.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
     return session
 
-
+# Builds the S3 filename/key used in upload
 def s3_key(feed_name: str, fetched_at: datetime) -> str:
-    """
-    Hive-style partitioned key:
-      raw/station_status/dt=2026-08-15/hour=14/station_status_20260815T143012Z.json.gz
-
-    The dt=/hour= convention lets Snowflake and dbt prune partitions later
-    instead of scanning every file ever collected.
-    """
     stamp = fetched_at.strftime("%Y%m%dT%H%M%SZ")
     return (
         f"raw/{feed_name}/"
@@ -68,19 +73,17 @@ def s3_key(feed_name: str, fetched_at: datetime) -> str:
 
 
 def fetch(session: requests.Session, url: str) -> bytes:
-    response = session.get(url, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-    body = response.content
-    if not body.strip().startswith(b"{"):
+    response = session.get(url, timeout=REQUEST_TIMEOUT)         #  sessions.get from requests.Session class, timeout needed or else it will wait forever
+    response.raise_for_status()          # raises exception if response is 4xx or 5xx
+    body = response.content  
+    if not body.strip().startswith(b"{"):          # cheap way to check if it's JSON
         raise ValueError(f"Response from {url} does not look like JSON")
     return body
 
-
+# compresses by gzip which is lossless
 def gzip_bytes(raw: bytes) -> bytes:
     buffer = io.BytesIO()
-    # mtime=0 keeps the gzip header deterministic, so identical payloads
-    # produce identical bytes. Makes diffing/debugging saner.
-    with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as handle:
+    with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as handle:          # mtime=0 keeps the gzip header deterministic, so identical payloads produce identical bytes, useful for diffing/debugging. 
         handle.write(raw)
     return buffer.getvalue()
 
@@ -101,7 +104,7 @@ def upload(client, bucket: str, key: str, payload: bytes, fetched_at: datetime, 
 
 def collect(feed_names, bucket: str, dry_run: bool) -> int:
     session = build_session()
-    client = None if dry_run else boto3.client("s3")
+    client = None if dry_run else boto3.client("s3")          # boto3 is AWS SDK for Python
     failures = 0
 
     for name in feed_names:
@@ -132,8 +135,8 @@ def collect(feed_names, bucket: str, dry_run: bool) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Snapshot Citi Bike GBFS feeds to S3.")
-    parser.add_argument(
+    parser = argparse.ArgumentParser(description="Snapshot Citi Bike GBFS feeds to S3.")          # creates command line interface
+    parser.add_argument(   
         "--feeds",
         nargs="+",
         choices=sorted(FEEDS),

@@ -38,5 +38,5 @@ jobs:
           # willingness to fire cron.
           for i in $(seq 1 12); do
             python ingest/collect_gbfs.py --feeds station_status || true
-            [ "$i" -lt 12 ] && sleep 300
+            if [ "$i" -lt 12 ]; then sleep 300; fi
           done

@@ -2,29 +2,25 @@ name: Collect GBFS
 
 on:
   schedule:
-    # Station status: every 15 minutes. GitHub queues scheduled jobs, so actual
-    # firing times drift by a few minutes and occasionally skip. That's fine —
-    # the collector stamps each file with its own UTC fetch time.
-    - cron: "*/15 * * * *"
-    # Station information (names, lat/lon, capacity) changes rarely.
-    # Once a day at 05:10 UTC is plenty.
-    - cron: "10 5 * * *"
-  workflow_dispatch:        # lets you trigger a run by hand from the Actions tab
+    - cron: "5 * * * *"      # hourly; the loop below handles frequency
+    - cron: "10 5 * * *"     # daily reference feeds
+  workflow_dispatch:
+
+concurrency:
+  group: collect-gbfs
+  cancel-in-progress: false   # never run two collectors at once
 
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 65
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-
-      - name: Install dependencies
-        run: pip install -r ingest/requirements.txt
+      - run: pip install -r ingest/requirements.txt
 
       - name: Snapshot feeds
         env:
@@ -35,6 +31,12 @@ jobs:
         run: |
           if [ "${{ github.event.schedule }}" = "10 5 * * *" ]; then
             python ingest/collect_gbfs.py --feeds station_status station_information
-          else
-            python ingest/collect_gbfs.py --feeds station_status
+            exit 0
           fi
+          # Snapshot every 5 minutes for ~55 minutes. One scheduled trigger,
+          # twelve observations — decouples our sampling rate from GitHub's
+          # willingness to fire cron.
+          for i in $(seq 1 12); do
+            python ingest/collect_gbfs.py --feeds station_status || true
+            [ "$i" -lt 12 ] && sleep 300
+          done

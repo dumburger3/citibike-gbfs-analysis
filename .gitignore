@@ -1,0 +1,7 @@
+.venv/
+logs/
+target/
+dbt_packages/
+.env
+*.p8
+*.pub

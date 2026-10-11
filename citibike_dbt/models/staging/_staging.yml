@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: stg_station_status
+    description: >
+      One row per station per snapshot, flattened and typed from raw JSON.
+      Includes ghost (uninstalled) and non-renting stations; those are
+      filtered in the intermediate layer.
+    columns:
+      - name: station_id
+        tests: [not_null]
+      - name: fetched_at_utc
+        tests: [not_null]
+      - name: bikes_available
+        tests: [not_null]
+      - name: docks_available
+        tests: [not_null]
+
+  - name: stg_station_information
+    description: One row per station — the latest reference record (name, location, capacity).
+    columns:
+      - name: station_id
+        tests: [not_null, unique]
+      - name: lat
+        tests: [not_null]
+      - name: lon
+        tests: [not_null]

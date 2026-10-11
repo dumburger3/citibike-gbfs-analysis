@@ -1,0 +1,47 @@
+version: 2
+
+models:
+  - name: dim_station
+    description: >
+      One row per live station: location, reliability profile, and a
+      rebalancing priority rank (stations with 7+ days of history only).
+    columns:
+      - name: station_id
+        tests: [not_null, unique]
+      - name: station_profile
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['healthy', 'chronically empty', 'chronically full', 'both']
+
+  - name: fct_station_hourly
+    description: >
+      One row per station x hour-of-day (ET) x weekday/weekend.
+      Percentages are time-weighted share of observed minutes, not row counts.
+    columns:
+      - name: station_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_station')
+                field: station_id
+              # warn, not error: a brand-new station can appear in the status
+              # feed a day before the daily station_information snapshot.
+              config:
+                severity: warn
+
+  - name: fct_stockout_episodes
+    description: >
+      One row per continuous stockout (empty or full). Episodes containing a
+      collection gap over 15 minutes are flagged in spans_collection_gap.
+    columns:
+      - name: episode_id
+        tests: [not_null, unique]
+      - name: stockout_type
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['empty', 'full']
+      - name: duration_minutes
+        tests: [not_null]

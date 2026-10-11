@@ -1,0 +1,28 @@
+version: 2
+
+sources:
+  - name: gbfs_raw
+    description: >
+      Raw GBFS snapshots loaded from S3 by COPY INTO. One row per snapshot file;
+      the full JSON document sits unparsed in `payload`.
+    database: citibike
+    schema: raw
+    tables:
+      - name: station_status_raw
+        description: Live station counts, snapshotted every ~5 minutes (irregular — see README).
+        config:
+          loaded_at_field: fetched_at_utc
+          freshness:
+            warn_after: {count: 2, period: day}
+            error_after: {count: 4, period: day}
+        columns:
+          - name: source_file
+            tests: [not_null, unique]
+          - name: fetched_at_utc
+            tests: [not_null]
+
+      - name: station_information_raw
+        description: Station reference data (name, location, capacity), snapshotted daily.
+        columns:
+          - name: source_file
+            tests: [not_null, unique]

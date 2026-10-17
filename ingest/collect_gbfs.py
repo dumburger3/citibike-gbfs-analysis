@@ -1,20 +1,6 @@
 """
 Snapshot Citi Bike GBFS feeds to S3.
 
-Design notes:
-  - The raw layer stays BYTE-IDENTICAL to what the API returned. No parsing,
-    no cleaning, no reshaping. If we later discover we parsed something wrong,
-    we can rebuild from these files instead of re-collecting (impossible, since
-    the feed is ephemeral).
-  - Our own UTC fetch timestamp goes in the S3 key and in object metadata.
-    We do NOT trust the feed's `last_updated` for partitioning, because it can
-    be stale/cached, and GitHub Actions cron fires at irregular intervals.
-  - The GBFS spec version is part of the S3 key. Feed schemas change between
-    spec versions, so a version bump must land in a separate partition rather
-    than mixing two shapes of JSON in one prefix.
-  - Files are gzipped. Snowflake reads .gz from an external stage natively.
-  - Any failure exits non-zero so the Actions run shows red instead of
-    silently collecting nothing for a week.
 """
 
 import argparse

@@ -1,0 +1,76 @@
+// ============================================================
+// Citi Bike Rebalancing report: DAX measures and columns
+// Paste each block as its own New measure / New column.
+// Column names are UPPERCASE because Snowflake returns them that way.
+// ============================================================
+
+
+// ---------- MEASURES (Home > New measure; put them on DIM_STATION) ----------
+
+// Why SUMX x OBSERVED_MINUTES instead of AVERAGE: a plain average gives a
+// station watched for 2 days the same vote as one watched for 50. Weighting
+// by observed minutes keeps the "share of time" meaning from dbt.
+
+Stations Monitored =
+COUNTROWS ( DIM_STATION )
+
+Pct Time Stocked Out =
+DIVIDE (
+    SUMX ( DIM_STATION, DIM_STATION[PCT_TIME_STOCKED_OUT] * DIM_STATION[OBSERVED_MINUTES] ),
+    SUM ( DIM_STATION[OBSERVED_MINUTES] )
+)
+
+Problem Stations =
+CALCULATE ( COUNTROWS ( DIM_STATION ), DIM_STATION[STATION_PROFILE] <> "healthy" )
+
+// Only episodes whose start and end were both observed (see dbt flags).
+Median Stockout Minutes =
+CALCULATE (
+    MEDIAN ( FCT_STOCKOUT_EPISODES[DURATION_MINUTES] ),
+    FCT_STOCKOUT_EPISODES[SPANS_COLLECTION_GAP] = FALSE (),
+    FCT_STOCKOUT_EPISODES[END_UNOBSERVED] = FALSE ()
+)
+
+Pct Time Full (Hourly) =
+DIVIDE (
+    SUMX ( FCT_STATION_HOURLY, FCT_STATION_HOURLY[PCT_TIME_FULL] * FCT_STATION_HOURLY[OBSERVED_MINUTES] ),
+    SUM ( FCT_STATION_HOURLY[OBSERVED_MINUTES] )
+)
+
+Pct Time Empty (Hourly) =
+DIVIDE (
+    SUMX ( FCT_STATION_HOURLY, FCT_STATION_HOURLY[PCT_TIME_EMPTY] * FCT_STATION_HOURLY[OBSERVED_MINUTES] ),
+    SUM ( FCT_STATION_HOURLY[OBSERVED_MINUTES] )
+)
+
+Data Window =
+VAR first_obs = MIN ( FCT_STOCKOUT_EPISODES[STARTED_AT_ET] )
+VAR last_obs  = MAX ( FCT_STOCKOUT_EPISODES[LAST_SEEN_AT_ET] )
+RETURN
+    FORMAT ( first_obs, "mmm d" ) & " – " & FORMAT ( last_obs, "mmm d, yyyy" )
+        & "  ·  " & FORMAT ( [Stations Monitored], "#,0" ) & " stations"
+
+
+// ---------- CALCULATED COLUMNS (Table view > New column) ----------
+
+// On FCT_STATION_HOURLY:
+Day Type =
+IF ( FCT_STATION_HOURLY[IS_WEEKEND], "Weekend", "Weekday" )
+
+// On DIM_STATION: readable labels for legends and slicers.
+Profile =
+SWITCH (
+    DIM_STATION[STATION_PROFILE],
+    "chronically full",  "Chronically full",
+    "chronically empty", "Chronically empty",
+    "both",              "Empty & full",
+    "Healthy"
+)
+
+// On DIM_STATION: how far the activity weighting moved each station.
+// Positive = moved UP the priority list once activity was considered.
+Rank Change =
+IF (
+    NOT ISBLANK ( DIM_STATION[REBALANCING_PRIORITY_RANK] ),
+    DIM_STATION[STOCKOUT_TIME_RANK] - DIM_STATION[REBALANCING_PRIORITY_RANK]
+)
